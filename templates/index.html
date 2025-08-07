@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ollama Powered Search</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Google Fonts & Icons -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0a0a0a;
+            color: #e2e8f0;
+        }
+        .title-font {
+            font-family: 'Orbitron', sans-serif;
+        }
+        .loader-container { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.5rem; }
+        .pulsing-orb { width: 80px; height: 80px; background: radial-gradient(circle, #4f46e5 0%, #a78bfa 40%, transparent 70%); border-radius: 50%; animation: pulse 2s infinite, rotate 5s linear infinite; box-shadow: 0 0 20px #6d28d9, 0 0 40px #4f46e5, 0 0 60px #a78bfa; }
+        @keyframes pulse { 0%, 100% { transform: scale(0.95); opacity: 0.8; } 50% { transform: scale(1.05); opacity: 1; } }
+        @keyframes rotate { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .status-text { font-family: 'Orbitron', sans-serif; letter-spacing: 0.1em; animation: flicker 1.5s infinite alternate; }
+        @keyframes flicker { 0%, 18%, 22%, 25%, 53%, 57%, 100% { text-shadow: 0 0 4px #fff, 0 0 11px #fff, 0 0 19px #fff, 0 0 40px #4f46e5, 0 0 80px #4f46e5, 0 0 90px #4f46e5, 0 0 100px #4f46e5, 0 0 150px #4f46e5; } 20%, 24%, 55% { text-shadow: none; } }
+        .result-item { animation: fadeIn 0.5s ease-in-out forwards; opacity: 0; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+    {% raw %}
+        const { useState, useEffect, useCallback } = React;
+
+        // --- UI Components (Moved outside the main App component) ---
+
+        const OllamaStatusIndicator = ({ initialCheckDone, ollamaOnline }) => {
+            if (!initialCheckDone) {
+                return <div className="text-sm text-slate-400">Checking Ollama...</div>;
+            }
+            return (
+                <div className="flex items-center space-x-2">
+                    <span className={`h-3 w-3 rounded-full transition-colors ${ollamaOnline ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></span>
+                    <span className="text-sm text-slate-400">{ollamaOnline ? 'Ollama Online' : 'Ollama Offline'}</span>
+                </div>
+            );
+        };
+
+        const SearchBar = ({ query, setQuery, handleSearch, isLoading, ollamaOnline }) => (
+            <div className="w-full max-w-2xl mx-auto">
+                <h1 className="title-font text-4xl md:text-5xl text-center mb-2 text-indigo-300">Ollama Search</h1>
+                <p className="text-center text-slate-400 mb-8">Your local AI-powered search assistant</p>
+                <form onSubmit={handleSearch} className="flex items-center bg-slate-800/50 border border-slate-700 rounded-full shadow-lg backdrop-blur-sm p-2">
+                    <input
+                        type="text"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        placeholder={ollamaOnline ? "Ask your local AI anything..." : "Ollama is offline. Check settings."}
+                        className="w-full bg-transparent text-slate-200 placeholder-slate-500 focus:outline-none px-4 py-2"
+                        disabled={isLoading || !ollamaOnline}
+                    />
+                    <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800/50 disabled:cursor-not-allowed text-white font-bold py-2 px-5 rounded-full transition-colors duration-300" disabled={isLoading || !ollamaOnline}>
+                        {isLoading ? '...' : 'Search'}
+                    </button>
+                </form>
+            </div>
+        );
+
+        const LoadingIndicator = ({ ollamaStatus }) => (
+            <div className="loader-container mt-16">
+                <div className="pulsing-orb"></div>
+                <p className="status-text text-indigo-300">{ollamaStatus}</p>
+            </div>
+        );
+
+        const ErrorDisplay = ({ error }) => error && (
+            <div className="mt-8 max-w-2xl mx-auto bg-red-900/50 border border-red-700 rounded-lg p-4 text-center">
+                <h3 className="font-bold text-red-300 mb-2">An Error Occurred</h3>
+                <p className="text-red-400">{error}</p>
+            </div>
+        );
+        
+        const ResultsList = ({ rankedResults }) => (
+            <div className="mt-8 max-w-3xl mx-auto space-y-5">
+                {rankedResults.map((result, index) => (
+                    <div key={index} className="result-item bg-slate-800/50 border border-slate-700 rounded-lg p-5 transition-all duration-300 hover:bg-slate-800 hover:border-indigo-600" style={{animationDelay: `${index * 100}ms`}}>
+                        <a href={result.link} target="_blank" rel="noopener noreferrer" className="text-xl font-bold text-indigo-300 hover:underline">{result.title}</a>
+                        <p className="text-slate-400 mt-2">{result.summary}</p>
+                        <a href={result.link} target="_blank" rel="noopener noreferrer" className="text-sm text-green-400 mt-3 block truncate hover:underline">{result.link}</a>
+                    </div>
+                ))}
+            </div>
+        );
+
+        const SettingsPanel = ({ ollamaEndpoint, setOllamaEndpoint, ollamaModel, setOllamaModel, ollamaOnline, availableModels, setShowSettings }) => (
+            <div className="fixed top-4 right-4 bg-slate-800 border border-slate-700 rounded-lg p-4 shadow-2xl w-80 z-50">
+                <h3 className="font-bold mb-4 text-lg">Settings</h3>
+                <div className="space-y-4">
+                    <div>
+                        <label htmlFor="ollama-endpoint" className="block text-sm font-medium text-slate-300 mb-1">Ollama Endpoint</label>
+                        <input
+                            id="ollama-endpoint"
+                            type="text"
+                            value={ollamaEndpoint}
+                            onChange={(e) => setOllamaEndpoint(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-600 rounded-md px-3 py-2 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                    </div>
+                    <div>
+                        <label htmlFor="ollama-model" className="block text-sm font-medium text-slate-300 mb-1">Ollama Model</label>
+                        <select
+                            id="ollama-model"
+                            value={ollamaModel}
+                            onChange={(e) => setOllamaModel(e.target.value)}
+                            disabled={!ollamaOnline || availableModels.length === 0}
+                            className="w-full bg-slate-900 border border-slate-600 rounded-md px-3 py-2 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-700 disabled:cursor-not-allowed"
+                        >
+                            {availableModels.length > 0 ? (
+                                availableModels.map(model => <option key={model} value={model}>{model}</option>)
+                            ) : (
+                                <option>No models found</option>
+                            )}
+                        </select>
+                    </div>
+                </div>
+                 <button onClick={() => setShowSettings(false)} className="mt-4 w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 px-4 rounded-md transition-colors">
+                    Close
+                </button>
+            </div>
+        );
+
+        // --- Main App Component ---
+        const App = () => {
+            const [query, setQuery] = useState('');
+            const [isLoading, setIsLoading] = useState(false);
+            const [error, setError] = useState(null);
+            const [ollamaStatus, setOllamaStatus] = useState('');
+            const [rankedResults, setRankedResults] = useState([]);
+            
+            const [ollamaEndpoint, setOllamaEndpoint] = useState('http://localhost:11434');
+            const [ollamaModel, setOllamaModel] = useState('');
+            const [showSettings, setShowSettings] = useState(false);
+            const [availableModels, setAvailableModels] = useState([]);
+            const [ollamaOnline, setOllamaOnline] = useState(false);
+            const [initialCheckDone, setInitialCheckDone] = useState(false);
+
+            // Effect hook to check Ollama status on startup or when endpoint changes
+            useEffect(() => {
+                const checkOllamaStatus = async () => {
+                    setError(null);
+                    setInitialCheckDone(false);
+                    try {
+                        const response = await fetch('/api/status', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ ollama_endpoint: ollamaEndpoint })
+                        });
+
+                        const data = await response.json();
+                        if (!response.ok || !data.online) {
+                            throw new Error(data.error || "Failed to connect to Ollama.");
+                        }
+
+                        const modelNames = data.models.map(m => m.name);
+                        if (modelNames.length === 0) {
+                             throw new Error("No models found in Ollama. Run 'ollama pull <model_name>'.");
+                        }
+
+                        setAvailableModels(modelNames);
+                        setOllamaOnline(true);
+                        
+                        if (!ollamaModel || !modelNames.includes(ollamaModel)) {
+                            setOllamaModel(modelNames[0]);
+                        }
+
+                    } catch (err) {
+                        setError(`Ollama connection failed: ${err.message}`);
+                        setOllamaOnline(false);
+                        setAvailableModels([]);
+                    } finally {
+                        setInitialCheckDone(true);
+                    }
+                };
+
+                checkOllamaStatus();
+            }, [ollamaEndpoint]);
+
+            // Main search handler
+            const handleSearch = async (e) => {
+                e.preventDefault();
+                if (!query.trim() || !ollamaOnline) return;
+
+                setIsLoading(true);
+                setError(null);
+                setRankedResults([]);
+                setOllamaStatus('Contacting backend...');
+
+                try {
+                    const response = await fetch('/api/search', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            query: query,
+                            ollama_endpoint: ollamaEndpoint,
+                            ollama_model: ollamaModel
+                        })
+                    });
+
+                    setOllamaStatus('Processing results...');
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(data.error || 'An unknown error occurred.');
+                    }
+
+                    // Handle both array and object-with-result-key responses
+                    const results = Array.isArray(data) ? data : data.result;
+                    setRankedResults(results || []);
+
+                } catch (err) {
+                    setError(err.message);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+            
+            return (
+                <div className="min-h-screen bg-gradient-to-b from-slate-900 to-black p-4 md:p-8">
+                    <div className="absolute top-4 right-4 flex items-center space-x-4">
+                        <OllamaStatusIndicator initialCheckDone={initialCheckDone} ollamaOnline={ollamaOnline} />
+                        <button onClick={() => setShowSettings(!showSettings)} className="p-2 bg-slate-800/50 border border-slate-700 rounded-full hover:bg-slate-700 transition-colors">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-slate-300"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                        </button>
+                    </div>
+
+                    {showSettings && <SettingsPanel 
+                        ollamaEndpoint={ollamaEndpoint}
+                        setOllamaEndpoint={setOllamaEndpoint}
+                        ollamaModel={ollamaModel}
+                        setOllamaModel={setOllamaModel}
+                        ollamaOnline={ollamaOnline}
+                        availableModels={availableModels}
+                        setShowSettings={setShowSettings}
+                    />}
+
+                    <main className="container mx-auto">
+                        <SearchBar 
+                            query={query}
+                            setQuery={setQuery}
+                            handleSearch={handleSearch}
+                            isLoading={isLoading}
+                            ollamaOnline={ollamaOnline}
+                        />
+                        {isLoading && <LoadingIndicator ollamaStatus={ollamaStatus} />}
+                        <ErrorDisplay error={error} />
+                        {rankedResults.length > 0 && !isLoading && <ResultsList rankedResults={rankedResults} />}
+                    </main>
+                </div>
+            );
+        };
+
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+    {% endraw %}
+    </script>
+</body>
+</html>
